@@ -16,7 +16,7 @@ There are currently three test cases available:
 Some test parameters applicable to all the test cases are:
 * `unavailable_count` - the number nodes that other nodes can not reach / with data loss. Default is 0
 * `file_size` - the size of the file in bytes. The default is 4194304
-* `timeout_secs` - time out until test records failure in seconds. Default is 10 seconds
+* `timeout_secs` - time out until test records failure in seconds. Default is 300 seconds
 
 To set the params, use the `test-params` flag like so:
 
