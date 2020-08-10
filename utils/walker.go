@@ -25,6 +25,10 @@ func walk(ctx context.Context, nd ipld.Node, ng ipld.NodeGetter) error {
 		cids = append(cids, link.Cid)
 	}
 
+	if len(cids) == 0 {
+		return nil
+	}
+	
 	eg, gctx := errgroup.WithContext(ctx)
 
 	ndChan := ng.GetMany(ctx, cids)

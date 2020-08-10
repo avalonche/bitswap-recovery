@@ -34,13 +34,19 @@ instances = { min = 2, max = 64, default = 2 }
 
 [[testcases]]
 name = "reed-solomon"
-instance = { min = 2, max = 64, default = 2}
+instances = { min = 2, max = 64, default = 2}
 
   [testcases.params]
+  timeout_secs = { type = "int", desc = "timeout", unit = "seconds", default = 300 }
   file_size = { type = "int", desc = "file size", unit = "bytes", default = 4194304 }
+  unavailable_count = {type = "int", desc = "number of unavailable nodes that are down", unit = "peers", default = 0 }
   parity = { type = "int", desc = "number of parity blocks", default = 3 }
 
 [[testcases]]
 name = "entanglement"
-instance = { min = 2, max = 64, default = 2}
+instances = { min = 2, max = 64, default = 2}
 
+  [testcases.params]
+  timeout_secs = { type = "int", desc = "timeout", unit = "seconds", default = 300 }
+  file_size = { type = "int", desc = "file size", unit = "bytes", default = 4194304 }
+  unavailable_count = {type = "int", desc = "number of unavailable nodes that are down", unit = "peers", default = 0 }

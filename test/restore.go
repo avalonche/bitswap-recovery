@@ -10,6 +10,8 @@ import (
 	
 	"github.com/ipfs/go-cid"
 	files "github.com/ipfs/go-ipfs-files"
+	uio "github.com/ipfs/go-unixfs/io"
+	"github.com/ipfs/go-merkledag"
 
 	"github.com/testground/sdk-go/runtime"
 	"github.com/testground/sdk-go/sync"
@@ -19,6 +21,9 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/peer"
+
+	rs "github.com/Wondertan/go-ipfs-recovery/reedsolomon"
+	recovery "github.com/Wondertan/go-ipfs-recovery"
 
 	"github.com/avalonche/bitswap-restore/utils"
 )
@@ -213,6 +218,7 @@ func Restore(runenv *runtime.RunEnv) error {
 				if err != nil {
 					return fmt.Errorf("Fetched data does not match the original file: %w", err)
 				}
+				runenv.RecordMessage("Fetched data match")
 			}
 			// Check that we have retrieved the original file
 			runenv.RecordMessage("Leech fetch complete")
@@ -288,7 +294,7 @@ func setupData(ctx context.Context, runenv *runtime.RunEnv, node *utils.Node, fi
 		return setupIPFSSeed(ctx, runenv, node, tmpFile, seedIndex)
 	case "reed-solomon":
 		// parse rs params and distribute ipld graph in dagservice
-		// setupRS()
+		return setupRS(ctx, runenv, node, tmpFile, seedIndex)
 	case "entanglement":
 		// parse entanglement params and distribute ipld dag in dagservice
 		// setupEntanglement
@@ -336,38 +342,38 @@ func setupIPFSSeed(ctx context.Context, runenv *runtime.RunEnv, node *utils.Node
 	return ipldNode.Cid(), nil
 }
 
-// func setupRS(ctx context.Context, runenv *runtime.RunEnv, node *utils.Node, tmpFile io.Reader, seedIndex int) (cid.Cid, error) {
-// 	ipldNode, err := node.Add(ctx, tmpFile)
-// 	if err != nil {
-// 		return cid.Cid{}, err
-// 	}
-// 	// Level of recoverability
-// 	parity := runenv.IntParam("parity")
+func setupRS(ctx context.Context, runenv *runtime.RunEnv, node *utils.Node, tmpFile io.Reader, seedIndex int) (cid.Cid, error) {
+	ipldNode, err := node.Add(ctx, tmpFile)
+	if err != nil {
+		return cid.Cid{}, err
+	}
+	// Level of recoverability
+	parity := runenv.IntParam("parity")
 
-// 	ng := merkledag.NewSession(ctx, n.Dserv)
-// 	// Encoding the dag
-// 	encodedNode, err := recovery.EncodeDAG()
+	ng := merkledag.NewSession(ctx, node.Dserv)
+	e := rs.NewEncoder(node.Dserv)
+	// Encoding the dag
+	encodedNode, err := recovery.EncodeDAG(ctx, ng, e, ipldNode, parity)
 
-// 	// Remove data blocks and distributed between nodes
-// 	nodes, err := getLeafNodes(ctx, encodedNOde, node.Dserv)
-// 	if err != nil {
-// 		return cid.Cid{}, err
-// 	}
+	// Remove data blocks and distributed between nodes
+	encodedNodes, err := getLeafNodes(ctx, encodedNode, node.Dserv)
+	if err != nil {
+		return cid.Cid{}, err
+	}
 
-// 	var del []cid.Cid
-// 	for i := 0; i < len(nodes) * numerator; i++ {
-// 		if i%denominator != numerator {
-// 			del = append(del, nodes[i%len(nodes)].Cid())
-// 		}
-// 	}
+	// Delete first 3 data blocks
+	var del []cid.Cid
+	for i := 0; i < parity; i++ {
+		del = append(del, encodedNodes[i].Cid())
+	}
 	
-// 	if err := node.Dserv.RemoveMany(ctx, del); err != nil {
-// 		return cid.Cid{}, err
-// 	}
+	if err := node.Dserv.RemoveMany(ctx, del); err != nil {
+		return cid.Cid{}, err
+	}
 
-// 	runenv.RecordMessage("Removed %d / %d blocks, blockstore has %d / %d fraction of blocks remaining", len(del), len(nodes), numerator, denominator)
-// 	return encodedNode.Cid(), nil
-// }
+	runenv.RecordMessage("Removed %d / %d blocks", len(del), len(encodedNodes))
+	return encodedNode.Cid(), nil
+}
 
 // func setupEntanglement() {}
 
@@ -398,7 +404,7 @@ func recoverData(ctx context.Context, runenv *runtime.RunEnv, node *utils.Node, 
 	case "ipfs":
 		return ipfsFetchData(ctx, node, rootCid)
 	case "reed-solomon":
-		// rsFetchData()
+		return rsFetchData(ctx, node, rootCid, runenv)
 	case "entanglement":
 		// entangleFetchData()
 	}
@@ -425,8 +431,54 @@ func ipfsFetchData(ctx context.Context, node *utils.Node, rootCid cid.Cid) ([]by
 	return ioutil.ReadAll(fn)
 }
 
-// func rsFetchData() {}
-// func entangleFetchData() {}
+func rsFetchData(ctx context.Context, node *utils.Node, rootCid cid.Cid, runenv *runtime.RunEnv) ([]byte, error) {
+	ng := merkledag.NewSession(ctx, node.Dserv)
+	r := rs.NewRecoverer(node.Dserv)
+	g := recovery.NewNodeGetter(ng, r)
+
+	nd, err := ng.Get(ctx, rootCid)
+	if err != nil {
+		return nil, fmt.Errorf("Unable to get root node: %w", err)
+	}
+
+	pnd, err := rs.UnmarshalNode(nd.RawData())
+	if err != nil {
+		return nil, fmt.Errorf("Unable to unmarshal node: %w", err)
+	}
+
+	parity := runenv.IntParam("parity")
+	links := nd.Links()
+	var lost []cid.Cid
+	for i := 0; i < parity; i++ {
+		lost = append(lost, links[i].Cid)
+	}
+
+	// Recover the lost nodes
+	_, err = rs.Recover(ctx, node.Dserv, pnd, lost...)
+	if err != nil {
+		return nil, fmt.Errorf("Unable to recover lost nodes: %w", err)
+	}
+	runenv.RecordMessage("Recovered %d data blocks", len(lost))
+	// Waiting on Get and GetMany results in timeout if recovery not called beforehand
+	err = utils.Walk(ctx, rootCid, g)
+	if err != nil {
+		return nil, err
+	}
+
+	rnd, err := g.Get(ctx, rootCid)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := uio.NewDagReader(ctx, rnd, g)
+	if err != nil {
+		return nil, err
+	}
+	
+	return ioutil.ReadAll(out)
+}
+
+func entangleFetchData() {}
 
 func arrComp(a []byte, b []byte) error {
 	if len(a) != len(b) {
